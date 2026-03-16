@@ -162,18 +162,6 @@ Note: The Bastion Host was created manually so you need to terminate it manually
 
 ---
 
-## How to Add Screenshots to This README
-
-You cannot paste images directly into a `.md` file. Here is the correct way to add screenshots on GitHub:
-
-1. Open any Issue in your GitHub repository
-2. In the comment box, paste your screenshot
-3. GitHub will upload it and generate a link automatically
-4. Copy that link and paste it into the README at the right place
-
-Alternatively, create a `screenshots/` folder in your repo, upload your image files there, and reference them in the README using the image path.
-
----
 
 ## What I Learned From This Project
 
