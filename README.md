@@ -1,631 +1,187 @@
 # Production-Ready 3-Tier Infrastructure Deployment Using Terraform Modules
 
-A 3-tier web application deployed on AWS using Terraform. Users fill out a registration form in the browser, and the data moves through three layers — web, application, and database — before being stored in a managed MySQL database on RDS.
+This project deploys a complete 3-tier web application on AWS using Terraform modules. A user opens a registration form in the browser, submits their details, and the data gets stored in a MySQL database on Amazon RDS. The infrastructure is fully managed through Terraform.
+
+
 
 ---
 
-## How the Application Works
+## How It Works
 
-1. User opens the browser and types the Web Server's public IP.
-2. A registration form appears.
-3. User fills in the form and submits it.
-4. NGINX on the Web Server receives the request and forwards it to the App Server.
-5. Flask on the App Server processes the data.
-6. Flask connects to the RDS MySQL database and saves the user's record.
-7. A success message is sent back to the user.
+The request travels through three layers:
+
+- The Web Server receives the request from the browser. It runs NGINX in a public subnet and forwards the request to the App Server.
+- The App Server runs a Flask application in a private subnet. It processes the form data and sends it to the database.
+- The Database is an RDS MySQL instance in a private database subnet. It stores the user records and is not accessible from the internet.
 
 ---
 
-## Architecture
-
-```
-Internet
-    |
-Internet Gateway
-    |
-Public Subnet
-    |-- Web Server (EC2 + NGINX)
-    |-- Bastion Host (EC2, for SSH access only)
-         |
-    Private Subnet
-         |-- App Server (EC2 + Flask)
-              |
-         Database Subnet
-              |-- RDS MySQL
-```
-
----
-
-## Project Folder Structure
+## Project Structure
 
 ```
 .
-├── main.tf
-├── variables.tf
-├── outputs.tf
-├── terraform.tfvars
-└── modules/
-    ├── vpc/
-    │   ├── main.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    ├── subnets/
-    │   ├── main.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    ├── security_groups/
-    │   ├── main.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    ├── ec2/
-    │   ├── main.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    └── rds/
-        ├── main.tf
-        ├── variables.tf
-        └── outputs.tf
+├── html/
+│   └── index.html               # Frontend registration form
+├── modules/
+│   ├── vpc/                     # VPC, subnets, IGW, NAT, route tables
+│   ├── web/                     # Web Server EC2 and security group
+│   ├── app/                     # App Server EC2 and security group
+│   └── rds/                     # RDS instance, subnet group, security group
+├── scripts/                     # Setup scripts for web and app servers
+├── main.tf                      # Calls all modules
+├── provider.tf                  # AWS provider and region
+├── variables.tf                 # Input variable declarations
+├── terraform.tfvars             # actual variable values
+├── outputs.tf                   # Outputs like public IPs and RDS endpoint
+├── keypair.tf                   # SSH key pair for EC2 access
+├── terraform-key                # Private key (never commit this)
+└── terraform-key.pub            # Public key
 ```
 
 ---
 
-## Step 1 — AWS Account Setup
+## Prerequisites
 
-### Create an IAM User
+Before you begin, make sure you have the following installed and configured on your machine:
 
-Go to AWS Console → IAM → Users → Create user
-
-- Name: `terraform-user`
-- Attach policy: `AdministratorAccess`
-
-### Create Access Keys
-
-Go to IAM → Users → `terraform-user` → Security credentials → Create access key
-
-Download the `.csv` file. You will need the Access Key ID and Secret Access Key in the next step.
-
----
-
-## Step 2 — Install Required Tools
-
-### Terraform
-
-Download from https://developer.hashicorp.com/terraform/downloads, extract it, and add the binary to your system PATH.
-
-```bash
-terraform -version
-```
-
-### AWS CLI
-
-Download from https://aws.amazon.com/cli/ and install it.
-
-```bash
-aws --version
-```
-
-Configure it with your IAM credentials:
-
-```bash
-aws configure
-# Enter: Access Key ID, Secret Access Key, region (e.g. us-east-1), output format (json)
-```
-
-### VS Code Extensions
-
-Install these two extensions in VS Code:
 - Terraform
-- AWS Toolkit
+- AWS CLI
+- VS Code with the Terraform and AWS Toolkit extensions
 
 ---
 
-## Step 3 — Terraform Infrastructure
+## Step 1 — Set Up AWS Credentials
 
-### AWS Provider (main.tf)
+Create an IAM user in the AWS Console named `terraform-user` and attach the `AdministratorAccess` policy to it.
 
-```hcl
-provider "aws" {
-  region = var.aws_region
-}
-```
+Then go to that user's Security Credentials tab and create an Access Key. Download the CSV file — you will need the Access Key ID and Secret Access Key.
 
-### VPC Module
-
-```hcl
-module "vpc" {
-  source               = "./modules/vpc"
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  name                 = "my-vpc"
-}
-```
-
-**modules/vpc/main.tf**
-
-```hcl
-resource "aws_vpc" "main" {
-  cidr_block           = var.cidr_block
-  enable_dns_support   = var.enable_dns_support
-  enable_dns_hostnames = var.enable_dns_hostnames
-
-  tags = {
-    Name = var.name
-  }
-}
-
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-
-  tags = {
-    Name = "${var.name}-igw"
-  }
-}
-```
-
-### Subnets Module
-
-```hcl
-module "subnets" {
-  source = "./modules/subnets"
-  vpc_id = module.vpc.vpc_id
-
-  public_subnets      = ["10.0.1.0/24", "10.0.2.0/24"]
-  private_subnets     = ["10.0.3.0/24", "10.0.4.0/24"]
-  database_subnets    = ["10.0.5.0/24", "10.0.6.0/24"]
-  availability_zones  = ["us-east-1a", "us-east-1b"]
-  internet_gateway_id = module.vpc.igw_id
-}
-```
-
-**modules/subnets/main.tf**
-
-```hcl
-resource "aws_subnet" "public" {
-  count                   = length(var.public_subnets)
-  vpc_id                  = var.vpc_id
-  cidr_block              = var.public_subnets[count.index]
-  availability_zone       = var.availability_zones[count.index]
-  map_public_ip_on_launch = true
-
-  tags = { Name = "public-subnet-${count.index + 1}" }
-}
-
-resource "aws_subnet" "private" {
-  count             = length(var.private_subnets)
-  vpc_id            = var.vpc_id
-  cidr_block        = var.private_subnets[count.index]
-  availability_zone = var.availability_zones[count.index]
-
-  tags = { Name = "private-subnet-${count.index + 1}" }
-}
-
-resource "aws_subnet" "database" {
-  count             = length(var.database_subnets)
-  vpc_id            = var.vpc_id
-  cidr_block        = var.database_subnets[count.index]
-  availability_zone = var.availability_zones[count.index]
-
-  tags = { Name = "db-subnet-${count.index + 1}" }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = var.vpc_id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = var.internet_gateway_id
-  }
-
-  tags = { Name = "public-rt" }
-}
-
-resource "aws_route_table_association" "public" {
-  count          = length(aws_subnet.public)
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
-}
-```
-
-### Security Groups Module
-
-```hcl
-module "security_groups" {
-  source = "./modules/security_groups"
-  vpc_id = module.vpc.vpc_id
-  my_ip  = var.my_ip
-}
-```
-
-**modules/security_groups/main.tf**
-
-```hcl
-# Web Server - allows HTTP from internet and SSH from your IP
-resource "aws_security_group" "web_sg" {
-  name   = "web-sg"
-  vpc_id = var.vpc_id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.my_ip]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# App Server - allows port 5000 from Web Server and SSH from Bastion
-resource "aws_security_group" "app_sg" {
-  name   = "app-sg"
-  vpc_id = var.vpc_id
-
-  ingress {
-    from_port       = 5000
-    to_port         = 5000
-    protocol        = "tcp"
-    security_groups = [aws_security_group.web_sg.id]
-  }
-
-  ingress {
-    from_port       = 22
-    to_port         = 22
-    protocol        = "tcp"
-    security_groups = [aws_security_group.web_sg.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# Database - allows MySQL only from App Server
-resource "aws_security_group" "db_sg" {
-  name   = "db-sg"
-  vpc_id = var.vpc_id
-
-  ingress {
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app_sg.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-```
-
-### EC2 Module
-
-```hcl
-module "web_server" {
-  source            = "./modules/ec2"
-  ami               = var.ami_id
-  instance_type     = "t2.micro"
-  subnet_id         = module.subnets.public_subnet_ids[0]
-  security_group_id = module.security_groups.web_sg_id
-  key_name          = var.key_name
-  name              = "web-server"
-}
-
-module "app_server" {
-  source            = "./modules/ec2"
-  ami               = var.ami_id
-  instance_type     = "t2.micro"
-  subnet_id         = module.subnets.private_subnet_ids[0]
-  security_group_id = module.security_groups.app_sg_id
-  key_name          = var.key_name
-  name              = "app-server"
-}
-```
-
-**modules/ec2/main.tf**
-
-```hcl
-resource "aws_instance" "this" {
-  ami                    = var.ami
-  instance_type          = var.instance_type
-  subnet_id              = var.subnet_id
-  vpc_security_group_ids = [var.security_group_id]
-  key_name               = var.key_name
-
-  tags = {
-    Name = var.name
-  }
-}
-```
-
-### RDS Module
-
-```hcl
-module "rds" {
-  source            = "./modules/rds"
-  db_name           = "mydb"
-  username          = "admin"
-  password          = var.db_password
-  instance_class    = "db.t3.micro"
-  subnet_ids        = module.subnets.database_subnet_ids
-  security_group_id = module.security_groups.db_sg_id
-}
-```
-
-**modules/rds/main.tf**
-
-```hcl
-resource "aws_db_subnet_group" "main" {
-  name       = "rds-subnet-group"
-  subnet_ids = var.subnet_ids
-}
-
-resource "aws_db_instance" "main" {
-  identifier             = "mydb-instance"
-  engine                 = "mysql"
-  engine_version         = "8.0"
-  instance_class         = var.instance_class
-  allocated_storage      = 20
-  storage_type           = "gp2"
-  db_name                = var.db_name
-  username               = var.username
-  password               = var.password
-  db_subnet_group_name   = aws_db_subnet_group.main.name
-  vpc_security_group_ids = [var.security_group_id]
-  skip_final_snapshot    = true
-  publicly_accessible    = false
-}
-```
+Run `aws configure` in your terminal and enter your Access Key, Secret Key, region, and output format.
 
 ---
 
-## Step 4 — Deploy the Infrastructure
+## Step 2 — Clone the Repository
 
-Run these commands from your project root folder:
-
-```bash
-# Download providers and initialize modules
-terraform init
-
-# Check for any errors in your configuration
-terraform validate
-
-# See what Terraform will create before actually doing it
-terraform plan
-
-# Create everything on AWS
-terraform apply
-
-# When you are done and want to remove everything
-terraform destroy
-```
+Clone this repository to your local machine and open the folder in VS Code.
 
 ---
 
-## Step 5 — Bastion Host Setup (Manual)
+## Step 3 — Add Your Variable Values
 
-The Bastion Host is created manually from the AWS Console. It sits in the public subnet and is used only to SSH into the private App Server.
+Open `terraform.tfvars` and fill in your values. This includes things like your AWS region, your local IP address for SSH access, the database password, and the AMI ID you want to use for the EC2 instances.
 
-Create an EC2 instance with:
-- AMI: Amazon Linux 2
-- Subnet: any public subnet
-- Security Group: allow SSH (port 22) from your IP only
-
-To reach the App Server through the Bastion:
-
-```bash
-# First SSH into the Bastion
-ssh -i your-key.pem ec2-user@<BASTION_PUBLIC_IP>
-
-# Then from the Bastion, SSH into the App Server
-ssh -i your-key.pem ec2-user@<APP_SERVER_PRIVATE_IP>
-```
+Do not commit this file if it contains sensitive values like passwords.
 
 ---
 
-## Step 6 — Web Server Configuration (NGINX)
+## Step 4 — Review the Module Structure
 
-SSH into the Web Server and run:
+This project uses four Terraform modules. Each one handles one layer of the infrastructure:
 
-```bash
-sudo yum update -y
-sudo yum install nginx -y
-```
+The `vpc` module creates the VPC, public and private subnets, the Internet Gateway, the NAT Gateway, and all route tables. The web and app layers communicate through this networking setup.
 
-Create the NGINX config file:
+The `web` module creates the Web Server EC2 instance in the public subnet and its security group. The security group allows HTTP on port 80 from the internet and SSH from your IP only.
 
-```bash
-sudo nano /etc/nginx/conf.d/app.conf
-```
+The `app` module creates the App Server EC2 instance in the private subnet and its security group. The security group only allows traffic on port 5000 from the Web Server and SSH from the Bastion Host.
 
-Paste this configuration and replace `APP_SERVER_PRIVATE_IP` with the actual private IP of your App Server:
+The `rds` module creates the RDS MySQL instance, the DB subnet group across the database subnets, and the security group that only allows MySQL traffic on port 3306 from the App Server.
 
-```nginx
-server {
-    listen 80;
-
-    location / {
-        root /usr/share/nginx/html;
-        index index.html;
-    }
-
-    location /register {
-        proxy_pass http://<APP_SERVER_PRIVATE_IP>:5000/register;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-Start NGINX:
-
-```bash
-sudo systemctl start nginx
-sudo systemctl enable nginx
-```
+All four modules are wired together in the root `main.tf` file.
 
 ---
 
-## Step 7 — App Server Configuration (Flask)
+## Step 5 — Deploy the Infrastructure
 
-SSH into the App Server via the Bastion Host, then run:
+Open a terminal in the project root folder and run the following commands one by one:
 
-```bash
-sudo yum update -y
-sudo yum install python3-pip -y
-pip3 install flask pymysql
-```
+First, run `terraform init` to download the AWS provider and initialize all modules.
 
-Set environment variables so Flask knows how to connect to the database:
+Then run `terraform validate` to check that your configuration files have no syntax errors.
 
-```bash
-export DB_HOST=<RDS-ENDPOINT>
-export DB_USER=admin
-export DB_PASSWORD=<your-password>
-export DB_NAME=mydb
-```
+Then run `terraform plan` to see a preview of everything Terraform is going to create. Review this carefully before proceeding.
 
-Create the Flask application file:
+Then run `terraform apply` and type `yes` when prompted. Terraform will now create all the AWS resources. This takes a few minutes.
 
-```bash
-nano app.py
-```
-
-Paste this code:
-
-```python
-from flask import Flask, request, jsonify
-import pymysql
-import os
-
-app = Flask(__name__)
-
-def get_db_connection():
-    return pymysql.connect(
-        host=os.environ['DB_HOST'],
-        user=os.environ['DB_USER'],
-        password=os.environ['DB_PASSWORD'],
-        database=os.environ['DB_NAME']
-    )
-
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.form
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO users (name, email) VALUES (%s, %s)",
-        (data['name'], data['email'])
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return jsonify({"message": "User registered successfully"})
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-```
-
-Run the application in the background so it keeps running after you close the terminal:
-
-```bash
-nohup python3 app.py &
-```
+Once it finishes, the terminal will print the outputs defined in `outputs.tf` — this includes the Web Server's public IP and the RDS endpoint. Save these values.
 
 ---
 
-## Step 8 — Database Access from App Server
+## Step 6 — Set Up the Bastion Host (Manual Step)
 
-Install the MySQL client:
+The Bastion Host is not created by Terraform. You need to create it manually from the AWS Console.
 
-```bash
-sudo yum install mariadb105-server -y
-```
+Launch a new EC2 instance in the same public subnet as the Web Server. Use Amazon Linux 2, a t2.micro instance type, and create a security group that only allows SSH on port 22 from your IP address.
 
-Connect to the RDS database:
-
-```bash
-mysql -h <RDS-ENDPOINT> -u admin -p
-```
-
-Once connected, run these SQL commands to verify everything is working:
-
-```sql
-SHOW DATABASES;
-USE mydb;
-SHOW TABLES;
-SELECT * FROM users;
-```
+You will use this Bastion Host to SSH into the private App Server.
 
 ---
 
-## Troubleshooting
+## Step 7 — Configure the Web Server
 
-Check if the Flask application is running:
+SSH into the Web Server using its public IP and the terraform-key private key.
 
-```bash
-ps aux | grep python
-```
+Install NGINX on the server. Then edit the NGINX configuration to set up a reverse proxy. The configuration should forward any requests to the `/register` path to the App Server's private IP on port 5000. After updating the config, start and enable the NGINX service.
 
-View Flask logs:
+Copy the `index.html` file from the `html/` folder in the repo to the NGINX web root on the server so the registration form is served to users.
 
-```bash
-cat nohup.out
+---
 
-# Watch logs live
-tail -f nohup.out
-```
+## Step 8 — Configure the App Server
 
-Confirm the DB_HOST variable is set correctly:
+SSH into the Bastion Host first, then from there SSH into the App Server using its private IP.
 
-```bash
-echo $DB_HOST
-```
+Install Python 3, pip, Flask, and PyMySQL on the server.
 
-Test that the RDS endpoint resolves:
+Set the database environment variables on the server — the RDS endpoint, database username, password, and database name. These are needed by the Flask app to connect to RDS.
 
-```bash
-nslookup <RDS-ENDPOINT>
-```
+Copy the Flask application script from the `scripts/` folder in the repo to the App Server and run it in the background using nohup so it keeps running after you close the terminal.
 
-Test MySQL connection manually:
+---
 
-```bash
-mysql -h <RDS-ENDPOINT> -u admin -p
-```
+## Step 9 — Verify the Database
 
-Restart MariaDB if needed:
+From the App Server, install the MySQL client. Then connect to the RDS instance using the endpoint from the Terraform outputs along with the admin username and password.
 
-```bash
-sudo systemctl start mariadb
-```
+Once connected, check that the database and users table exist. After submitting the registration form from the browser, run a query to confirm that the user data was saved correctly.
+
+---
+
+## Step 10 — Test the Application
+
+Open a browser and navigate to the Web Server's public IP address. The registration form should appear.
+
+Fill in the form and submit it. You should see a success message. Then check the database to confirm the record was inserted.
+
+---
+
+## Destroying the Infrastructure
+
+When you are done and want to remove all AWS resources to avoid charges, run `terraform destroy` from the project root and type `yes` to confirm. This removes everything Terraform created.
+
+Note: The Bastion Host was created manually so you need to terminate it manually from the AWS Console as well.
+
+---
+
+## How to Add Screenshots to This README
+
+You cannot paste images directly into a `.md` file. Here is the correct way to add screenshots on GitHub:
+
+1. Open any Issue in your GitHub repository
+2. In the comment box, paste your screenshot
+3. GitHub will upload it and generate a link automatically
+4. Copy that link and paste it into the README at the right place
+
+Alternatively, create a `screenshots/` folder in your repo, upload your image files there, and reference them in the README using the image path.
 
 ---
 
 ## What I Learned From This Project
 
-- How to structure Terraform code using reusable modules
-- AWS VPC networking: subnets, route tables, and internet gateways
-- How to design security groups so each layer only talks to the layer directly below it
-- How a 3-tier architecture keeps web, application, and database concerns separated
-- How to configure NGINX as a reverse proxy to forward requests to a backend
-- How to build a Flask backend that accepts form data and writes it to MySQL
-- How to access private resources securely using a Bastion Host
-- How to debug cloud infrastructure using logs, CLI tools, and environment variables
+- How to break Terraform infrastructure into reusable modules for VPC, compute, and database layers
+- How AWS VPC networking works including subnets, route tables, Internet Gateway, and NAT Gateway
+- How to design security groups so each layer is only reachable from the layer directly above it
+- How a 3-tier architecture separates web, application, and database responsibilities
+- How to use NGINX as a reverse proxy to forward traffic to a backend
+- How to connect a Flask application to a managed RDS MySQL database
+- How to securely access private EC2 instances using a Bastion Host
+- How to debug and verify a working cloud deployment end to end
