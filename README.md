@@ -2,8 +2,6 @@
 
 A 3-tier web application deployed on AWS using Terraform. Users fill out a registration form in the browser, and the data moves through three layers — web, application, and database — before being stored in a managed MySQL database on RDS.
 
-GitHub: https://github.com/samarthfunde/Production-Ready-3-Tier-Infrastructure-Deployment-Using-Terraform-Modules.git
-
 ---
 
 ## How the Application Works
